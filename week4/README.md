@@ -1,38 +1,14 @@
 
 # 전체 구조 개요
-┌─────────────────────────────────────────────────────────────┐
-│                        run_agent()                           │
-│  (메인 실행 함수 - MCP 서버 연결 및 Agent 실행)              │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ├─ MCP 서버 연결
-                              │  └─ stdio_client + ClientSession
-                              │
-                              ├─ LLM 초기화 (Claude)
-                              │
-                              ├─ Tool 생성
-                              │  └─ build_tools(session)
-                              │      ├─ list_files
-                              │      ├─ read_csv_stats
-                              │      ├─ read_text_file
-                              │      ├─ create_text_file
-                              │      └─ create_markdown_file
-                              │
-                              ├─ Prompt 생성
-                              │  └─ build_agent_prompt()
-                              │
-                              ├─ Agent 생성
-                              │  └─ create_react_agent(llm, tools, prompt)
-                              │
-                              ├─ AgentExecutor 생성
-                              │  └─ AgentExecutor(agent, tools, verbose=True)
-                              │
-                              └─ Scenario 실행
-                                 └─ executor.ainvoke({"input": scenario})
+
+<img width="549" height="554" alt="image" src="https://github.com/user-attachments/assets/4041f0ea-1eef-4f82-bed1-226be1e7da25" />
+
+
 
 
 # 핵심 구성 요소별 코드 분석
-2.1 MCP Tool 호출 헬퍼
+
+## 2.1 MCP Tool 호출 헬퍼
 역할: MCP 서버의 도구를 호출하고 결과를 파싱
 pythonasync def call_mcp_tool(session, name: str, args: Dict[str, Any]) -> Any:
     """MCP 도구 호출 헬퍼"""
@@ -54,7 +30,7 @@ MCP 서버의 응답을 JSON으로 파싱
 
 
 
-2.2 LangChain Tool 래퍼 생성
+## 2.2 LangChain Tool 래퍼 생성
 역할: MCP 도구를 LangChain Agent가 사용할 수 있는 형태로 변환
 pythondef build_tools(session: ClientSession):
     """MCP tool들을 LangChain Tool로 래핑"""
@@ -87,7 +63,7 @@ docstring이 중요: LLM이 이 설명을 읽고 언제 도구를 사용할지 �
 각 도구는 call_mcp_tool()을 통해 실제 MCP 서버 호출
 
 
-2.3 Agent Prompt 구성
+## 2.3 Agent Prompt 구성
 역할: Agent의 행동 규칙과 사고 방식 정의
 pythondef build_agent_prompt() -> ChatPromptTemplate:
     """Agent의 판단 규칙 정의"""
@@ -116,7 +92,7 @@ Tool의 docstring으로 도구 설명
 ReAct 패턴으로 단계별 사고
 
 
-2.4 메인 실행 함수
+## 2.4 메인 실행 함수
 역할: MCP 연결 → Agent 구성 → 시나리오 실행
 pythonasync def run_agent():
     # 1️⃣ MCP 서버 연결 설정
@@ -168,35 +144,11 @@ pythonasync def run_agent():
 ---
 
 ## 3. 데이터 흐름
+
+<img width="316" height="537" alt="image" src="https://github.com/user-attachments/assets/c726559c-866e-4560-b871-1d891c26cce0" />
+
 ```
-사용자 Scenario
-      ↓
-AgentExecutor.ainvoke({"input": scenario})
-      ↓
-create_react_agent (ReAct 패턴)
-      ↓
-┌─────────────────────────────────────┐
-│  Thought: 무엇을 해야 할까?          │
-│  Action: list_files 도구 사용        │
-│  Action Input: {"dir_path": "."}    │
-└─────────────────────────────────────┘
-      ↓
-LangChain Tool (list_files)
-      ↓
-call_mcp_tool(session, "list_files", {...})
-      ↓
-MCP Server (filesystem_mcp.py)
-      ↓
-┌─────────────────────────────────────┐
-│  Observation: 파일 목록 반환         │
-│  [{"path": "...", "is_dir": ...}]   │
-└─────────────────────────────────────┘
-      ↓
-Agent가 결과 해석 후 다음 Action 결정
-      ↓
-(반복: Thought → Action → Observation)
-      ↓
-최종 Answer 생성
+
 ```
 
 ---
