@@ -1,15 +1,21 @@
 
 # 전체 구조 개요
 
+agent.py
+
 <img width="549" height="554" alt="image" src="https://github.com/user-attachments/assets/4041f0ea-1eef-4f82-bed1-226be1e7da25" />
 
+filesystem_mcp.py
+
+<img width="462" height="376" alt="image" src="https://github.com/user-attachments/assets/fa9022dd-8496-4bb6-8b82-a55114a4a6f7" />
 
 
 
-# 핵심 구성 요소별 코드 분석
+# 핵심 구성 요소별 코드 분석 1 (agent.py)
 
 ## 2.1 MCP Tool 호출 헬퍼
 역할: MCP 서버의 도구를 호출하고 결과를 파싱
+```
 pythonasync def call_mcp_tool(session, name: str, args: Dict[str, Any]) -> Any:
     """MCP 도구 호출 헬퍼"""
     res = await session.call_tool(name, args)
@@ -21,6 +27,7 @@ pythonasync def call_mcp_tool(session, name: str, args: Dict[str, Any]) -> Any:
             except:
                 return {"text": text}     # 실패 시 텍스트 반환
     return {"raw": str(res)}
+```
 특징:
 
 MCP 서버의 응답을 JSON으로 파싱
@@ -32,6 +39,7 @@ MCP 서버의 응답을 JSON으로 파싱
 
 ## 2.2 LangChain Tool 래퍼 생성
 역할: MCP 도구를 LangChain Agent가 사용할 수 있는 형태로 변환
+```
 pythondef build_tools(session: ClientSession):
     """MCP tool들을 LangChain Tool로 래핑"""
     
@@ -56,6 +64,7 @@ pythondef build_tools(session: ClientSession):
     
     return [list_files, read_csv_stats, read_text_file, 
             create_text_file, create_markdown_file]
+```
 핵심 포인트:
 
 @tool 데코레이터: LangChain Tool로 자동 변환
@@ -65,6 +74,7 @@ docstring이 중요: LLM이 이 설명을 읽고 언제 도구를 사용할지 �
 
 ## 2.3 Agent Prompt 구성
 역할: Agent의 행동 규칙과 사고 방식 정의
+```
 pythondef build_agent_prompt() -> ChatPromptTemplate:
     """Agent의 판단 규칙 정의"""
     return ChatPromptTemplate.from_messages([
@@ -79,6 +89,7 @@ pythondef build_agent_prompt() -> ChatPromptTemplate:
         ("human", "{input}"),
         MessagesPlaceholder(variable_name="agent_scratchpad"),
     ])
+```
 구조:
 
 system 메시지: Agent의 역할과 행동 규칙
@@ -94,6 +105,7 @@ ReAct 패턴으로 단계별 사고
 
 ## 2.4 메인 실행 함수
 역할: MCP 연결 → Agent 구성 → 시나리오 실행
+```
 pythonasync def run_agent():
     # 1️⃣ MCP 서버 연결 설정
     py = os.path.join(os.getcwd(), ".venv", "bin", "python")
@@ -147,9 +159,9 @@ pythonasync def run_agent():
 
 <img width="316" height="537" alt="image" src="https://github.com/user-attachments/assets/c726559c-866e-4560-b871-1d891c26cce0" />
 
-```
 
-```
+
+
 
 ---
 
@@ -172,20 +184,180 @@ Observation: [CSV 데이터]
 Thought: 모든 작업을 완료했다
 Final Answer: [최종 결과]
 
-Agent가 "언제 MCP를 써야 하는지" 판단하는 방법
+```
 
-System Prompt 규칙
+## Agent가 "언제 MCP를 써야 하는지" 판단하는 방법
 
+### System Prompt 규칙
+```
 python   "1) 파일 목록/파일 내용/CSV 값은 반드시 제공된 tool(MCP)로 조회한다. 추측 금지."
+```
 → 파일 관련 작업은 무조건 Tool 사용
 
-Tool Docstring
-
+### Tool Docstring
+```
 python   """dir_path 경로의 파일/폴더 목록을 조회한다."""
+```
 → LLM이 이 설명을 보고 "아, 파일 목록이 필요하면 이 도구를 써야겠구나" 판단
 
-ReAct 사고 과정
+### ReAct 사고 과정
 
-Thought에서 "파일 목록이 필요해"라고 생각
-사용 가능한 도구 중 list_files의 설명을 확인
-Action으로 list_files 선택
+- Thought에서 "파일 목록이 필요해"라고 생각
+- 사용 가능한 도구 중 list_files의 설명을 확인
+- Action으로 list_files 선택
+
+
+# 핵심 구성 요소별 코드 분석 2 (filesystem_mcp.py)
+
+## 2. 초기화 및 설정 부분
+### 2.1 Logging 비활성화
+```
+python# Logging (완전 비활성화 - MCP 프로토콜 보호)
+logger = logging.getLogger("week4-mcp")
+logger.setLevel(logging.CRITICAL)  # 모든 로그 비활성화
+logger.addHandler(logging.NullHandler())
+logger.propagate = False
+```
+목적:
+
+MCP는 stdin/stdout으로 JSON-RPC 프로토콜 통신
+어떤 로그도 stdout에 출력되면 프로토콜 오염 발생
+따라서 모든 로깅을 완전히 차단
+(python 3.13은 안됨. 3.11로 다운그레이드하여 진행)
+
+### 2.2 ROOT_DIR 설정
+```
+pythonROOT_DIR = Path(os.environ.get("MCP_ROOT_DIR", "./sandbox")).resolve()
+ROOT_DIR.mkdir(parents=True, exist_ok=True)
+```
+역할:
+
+환경변수 MCP_ROOT_DIR에서 작업 디렉토리 경로 가져오기
+없으면 기본값 ./sandbox 사용
+.resolve(): 절대 경로로 변환
+디렉토리가 없으면 자동 생성
+
+
+### 2.3 FastMCP 인스턴스 생성
+```
+pythonmcp = FastMCP("week4-filesystem-agent")
+```
+역할:
+
+MCP 서버 객체 생성
+"week4-filesystem-agent": 서버 식별 이름
+
+
+## 3. Helper 함수들
+### 3.1 경로 보안 검증
+```
+pythondef _safe_path(rel_path: str) -> Path:
+    """Prevent path traversal."""
+    p = (ROOT_DIR / rel_path).resolve()
+    if ROOT_DIR not in p.parents and p != ROOT_DIR:
+        raise ValueError("Path traversal detected.")
+    return p
+```
+목적: Path Traversal 공격 방지
+동작:
+```
+python
+# 안전한 경로
+_safe_path("data.csv")           # ✅ ROOT_DIR/data.csv
+_safe_path("folder/file.txt")    # ✅ ROOT_DIR/folder/file.txt
+
+# 위험한 경로 차단
+_safe_path("../../../etc/passwd") # ❌ ValueError
+_safe_path("/etc/passwd")         # ❌ ValueError
+```
+검증 로직:
+
+ROOT_DIR / rel_path: 상대 경로를 ROOT_DIR 기준으로 결합
+.resolve(): 심볼릭 링크 해제 및 절대 경로 변환
+ROOT_DIR not in p.parents: 최종 경로가 ROOT_DIR 밖이면 에러
+
+
+3.2 파일 읽기/쓰기
+```
+pythondef _read_text(p: Path) -> str:
+    return p.read_text(encoding="utf-8")
+
+def _write_text(p: Path, content: str) -> None:
+    p.parent.mkdir(parents=True, exist_ok=True)  # 부모 디렉토리 자동 생성
+    p.write_text(content, encoding="utf-8")
+```
+특징:
+
+UTF-8 인코딩 고정
+쓰기 시 부모 디렉토리 자동 생성
+
+
+## 4. MCP Tools (5개)
+### 4.1 list_files - 파일 목록 조회
+python
+```
+@mcp.tool()
+def list_files(dir_path: str = ".", recursive: bool = False) -> List[Dict[str, Any]]:
+    """List files under ROOT_DIR."""
+  ~~
+```
+
+
+### 4.2 read_text_file - 텍스트 파일 읽기
+python
+```
+@mcp.tool()
+def read_text_file(file_path: str) -> Dict[str, Any]:
+    """Read UTF-8 text file."""
+    
+    ~~~
+```
+
+
+### 4.3 create_text_file - 텍스트 파일 생성
+python
+```@mcp.tool()
+def create_text_file(file_path: str, content: str, overwrite: bool = False) -> Dict[str, Any]:
+    """Create plain text file."""
+    p = _safe_path(file_path)
+    ~~~
+```
+파라미터:
+
+overwrite=False: 기존 파일 보호
+overwrite=True: 기존 파일 덮어쓰기
+
+
+### 4.4 create_markdown_file - 마크다운 파일 생성
+python
+```@mcp.tool()
+def create_markdown_file(file_path: str, content: str, overwrite: bool = False) -> Dict[str, Any]:
+    """Create markdown file."""
+    ~~~
+```
+목적:
+
+기능적으로는 create_text_file과 동일
+의미적으로 마크다운 파일임을 명시
+Agent가 "마크다운 생성" 작업 시 적절한 도구 선택 가능
+
+
+### 4.5 read_csv_stats - CSV 읽기 + 통계
+python
+```
+@mcp.tool()
+def read_csv_stats(file_path: str, max_rows_preview: int = 50) -> Dict[str, Any]:
+    """Read CSV with stats and preview."""
+    ~~~
+    }
+```
+
+## 5. 실행 부분
+python
+```if __name__ == "__main__":
+    mcp.run()
+```
+
+<img width="469" height="258" alt="image" src="https://github.com/user-attachments/assets/2b13fb98-fd51-4c06-bdf8-f836098a4cbb" />
+
+
