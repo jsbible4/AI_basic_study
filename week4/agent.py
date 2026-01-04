@@ -9,62 +9,24 @@ from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
+
+# LangChain Agent (버전에 따라 import 경로가 다를 수 있음)
+from langchain.agents import AgentExecutor, create_react_agent
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp import ClientSession
 
 load_dotenv()
 
-# CSV 상수
+# 파일명 상수
 USER_PORTFOLIO = "International_stock_portfolio.csv"
 NPS_2024 = "NPS_International_stock_portfolio_2024.csv"
 NPS_2023 = "NPS_International_stock_portfolio_2023.csv"
-COL_RANK = "번호"
-COL_NAME = "종목명"
-COL_WEIGHT = "자산군 내 비중 (%)"
-
-# CSV helper 함수들
-def extract_names(rows):
-    """Extract stock names from CSV rows."""
-    names = []
-    for r in rows:
-        name = r.get(COL_NAME)
-        if name:
-            s = str(name).strip()
-            if s:
-                names.append(s)
-    return names
-
-def get_top10_by_rank(rows):
-    """Get top 10 stocks by rank."""
-    tmp = []
-    for r in rows:
-        try:
-            rk = int(r.get(COL_RANK, 0))
-            if 1 <= rk <= 10:
-                name = str(r.get(COL_NAME, "")).strip()
-                if name:
-                    tmp.append((rk, name))
-        except:
-            pass
-    tmp.sort()
-    return [name for _, name in tmp]
-
-def parse_weight(value):
-    """Parse weight percentage to float."""
-    if value is None:
-        return None
-    try:
-        s = str(value).replace("%", "").replace(" ", "").strip()
-        if s:
-            return float(s)
-    except:
-        pass
-    return None
 
 async def call_mcp_tool(session, name: str, args: Dict[str, Any]) -> Any:
-    """MCP 도구 호출 헬퍼"""
+    """MCP 도구 호출 헬퍼 (기존 그대로 유지)"""
     res = await session.call_tool(name, args)
-    
     if hasattr(res, "content") and res.content:
         text = getattr(res.content[0], "text", None)
         if text:
@@ -74,171 +36,116 @@ async def call_mcp_tool(session, name: str, args: Dict[str, Any]) -> Any:
                 return {"text": text}
     return {"raw": str(res)}
 
-async def run_scenario():
-    """메인 시나리오 - stdio_client를 제대로 사용"""
-    
+def build_tools(session: ClientSession):
+    """
+    MCP tool들을 LangChain Tool로 래핑.
+    docstring(설명)이 곧 LLM의 tool 사용 설명서임.
+    """
+
+    @tool
+    async def list_files(dir_path: str) -> Any:
+        """dir_path 경로의 파일/폴더 목록을 조회한다. (예: "." 또는 "sandbox")"""
+        return await call_mcp_tool(session, "list_files", {"dir_path": dir_path})
+    @tool
+    async def read_csv_stats(file_path: str, max_rows_preview: int = 200) -> Dict[str, Any]:
+        """
+        CSV 파일을 읽고 통계/미리보기(preview)를 반환한다.
+        - file_path: CSV 경로
+        - max_rows_preview: preview에 포함할 최대 행 수
+        반환 예시 key: columns, preview(list[dict]), row_count(구현에 따라 다를 수 있음)
+        """
+        return await call_mcp_tool(session, "read_csv_stats", {
+            "file_path": file_path,
+            "max_rows_preview": max_rows_preview
+        })
+
+    @tool
+    async def read_text_file(file_path: str) -> Dict[str, Any]:
+        """텍스트/마크다운 파일을 읽어 content를 반환한다."""
+        return await call_mcp_tool(session, "read_text_file", {"file_path": file_path})
+
+    @tool
+    async def create_text_file(file_path: str, content: str, overwrite: bool = True) -> Dict[str, Any]:
+        """
+        텍스트 파일을 생성/저장한다.
+        - overwrite=True면 동일 파일이 있으면 덮어쓴다.
+        """
+        return await call_mcp_tool(session, "create_text_file", {
+            "file_path": file_path,
+            "content": content,
+            "overwrite": overwrite
+        })
+
+    @tool
+    async def create_markdown_file(file_path: str, content: str, overwrite: bool = True) -> Dict[str, Any]:
+        """
+        마크다운 파일을 생성/저장한다.
+        - overwrite=True면 동일 파일이 있으면 덮어쓴다.
+        """
+        return await call_mcp_tool(session, "create_markdown_file", {
+            "file_path": file_path,
+            "content": content,
+            "overwrite": overwrite
+        })
+
+    return [list_files, read_csv_stats, read_text_file, create_text_file, create_markdown_file]
+
+def build_agent_prompt() -> ChatPromptTemplate:
+    """
+    “언제 MCP를 써야 하는지” 판단 규칙을 Prompt에 박아넣는 게 핵심.
+    """
+    return ChatPromptTemplate.from_messages([
+        ("system",
+         "너는 로컬 파일 분석 에이전트다.\n"
+         "규칙:\n"
+         "1) 파일 목록/파일 내용/CSV 값은 반드시 제공된 tool(MCP)로 조회한다. 추측 금지.\n"
+         "2) 비교/필터링/정렬은 CSV preview를 근거로 수행한다.\n"
+         "3) 산출물(txt, md)은 tool로 생성한 뒤 tool로 다시 읽어 저장이 되었는지 확인한다.\n"
+         "4) 최종 답변에는 생성된 파일명과 핵심 결과(Top10, only_in_my, 변화 요약)를 포함한다.\n"
+        ),
+        ("human", "{input}"),
+        MessagesPlaceholder(variable_name="agent_scratchpad"),
+    ])
+
+async def run_agent():
+    # MCP 서버 실행 파라미터 (기존 run_scenario에서 가져온 그대로 유지)
     py = os.path.join(os.getcwd(), ".venv", "bin", "python")
     script = os.path.join(os.getcwd(), "filesystem_mcp.py")
     root_dir = os.path.join(os.getcwd(), "sandbox")
-    
-    print(f"[agent] MCP Server: {script}")
-    print(f"[agent] ROOT_DIR: {root_dir}")
-    
+
     server_params = StdioServerParameters(
         command=py,
         args=[script],
         env={"MCP_ROOT_DIR": root_dir}
     )
-    
-    # stdio_client는 async generator이므로 이렇게 사용
+
     async with stdio_client(server_params) as (read_stream, write_stream):
         async with ClientSession(read_stream, write_stream) as session:
-            # 초기화
             await session.initialize()
-            print("[agent] ✅ MCP 서버 연결 성공!")
-            
-            # LLM 초기화
-            llm = ChatAnthropic(
-    model="claude-3-5-haiku-latest",
-    temperature=0.0
-)
 
-            
-            # === 시나리오 시작 ===
-            
-            print("\n=== [1] 파일 목록 확인 ===")
-            files = await call_mcp_tool(session, "list_files", {"dir_path": "."})
-            print(f"파일 개수: {len(files)}")
-            
-            print("\n=== [2] CSV 읽기 ===")
-            my_csv = await call_mcp_tool(session, "read_csv_stats", {
-                "file_path": USER_PORTFOLIO,
-                "max_rows_preview": 200
-            })
-            nps24_csv = await call_mcp_tool(session, "read_csv_stats", {
-                "file_path": NPS_2024,
-                "max_rows_preview": 200
-            })
-            
-            my_names = set(extract_names(my_csv["preview"]))
-            nps_names = set(extract_names(nps24_csv["preview"]))
-            print(f"내 포트폴리오: {len(my_names)}개 종목")
-            print(f"NPS 2024: {len(nps_names)}개 종목")
-            
-            print("\n=== [3] 차이점 분석 및 저장 ===")
-            only_mine = sorted(my_names - nps_names)
-            txt_content = "\n".join(only_mine) if only_mine else "(없음)"
-            await call_mcp_tool(session, "create_text_file", {
-                "file_path": "only_in_my_portfolio.txt",
-                "content": txt_content,
-                "overwrite": True
-            })
-            print(f"내 포트폴리오에만 있는 종목: {len(only_mine)}개")
-            
-            # txt 파일 읽기
-            read_result = await call_mcp_tool(session, "read_text_file", {
-                "file_path": "only_in_my_portfolio.txt"
-            })
-            print(f"저장된 내용 확인: {len(read_result['content'])} bytes")
-            
-            print("\n=== [4] NPS_2024 비중 1% 이상 종목 분석 ===")
-            heavy = []
-            for r in nps24_csv["preview"]:
-                w = parse_weight(r.get(COL_WEIGHT))
-                name = str(r.get(COL_NAME, "")).strip()
-                if w and w >= 1.0 and name:
-                    heavy.append((w, name))
-            heavy.sort(reverse=True)
-            print(f"비중 1% 이상: {len(heavy)}개 종목")
-            for w, name in heavy[:10]: ##--------
-                print(f"  - {name}: {w:.2f}%")
-            
-            print("\n=== [5] Top10 변화 분석 ===")
-            nps23_csv = await call_mcp_tool(session, "read_csv_stats", {
-                "file_path": NPS_2023,
-                "max_rows_preview": 200
-            })
-            
-            top10_23 = get_top10_by_rank(nps23_csv["preview"])
-            top10_24 = get_top10_by_rank(nps24_csv["preview"])
-            
-            r23 = {name: i+1 for i, name in enumerate(top10_23)}
-            r24 = {name: i+1 for i, name in enumerate(top10_24)}
-            
-            entered = [n for n in top10_24 if n not in r23]
-            exited = [n for n in top10_23 if n not in r24]
-            
-            moved = []
-            for n in top10_24:
-                if n in r23:
-                    delta = r23[n] - r24[n]
-                    if delta != 0:
-                        moved.append((delta, n, r23[n], r24[n]))
-            moved.sort(reverse=True)
-            
-            print(f"신규 진입: {len(entered)}개")
-            for name in entered:
-                print(f"  - {name}")
-            print(f"이탈: {len(exited)}개")
-            for name in exited:
-                print(f"  - {name}")
-            print(f"순위 변동: {len(moved)}개")
-            
-            print("\n=== [6] LLM 분석 ===")
-            prompt = f"""NPS 해외주식 Top10 변화를 1줄로 요약해라.
+            llm = ChatAnthropic(model="claude-3-5-haiku-latest", temperature=0.0)
 
-2023 Top10: {', '.join(top10_23)}
-2024 Top10: {', '.join(top10_24)}
-신규 진입: {', '.join(entered) if entered else '없음'}
-이탈: {', '.join(exited) if exited else '없음'}
+            tools = build_tools(session)
+            prompt = build_agent_prompt()
 
-출력 형식: "이유: <1줄 요약>"
+            agent = create_react_agent(llm, tools, prompt=prompt)
+            executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
+
+            scenario = f"""
+같은 디렉토리하에 있는 나의 투자 포트폴리오({USER_PORTFOLIO})를 읽고,
+국민연금 해외주식 포트폴리오({NPS_2023}, {NPS_2024})와 비교해라.
+
+해야 하는 일:
+1) 로컬 파일 list를 조회해 파일 개수를 확인한다.
+2) CSV들을 읽는다.
+3) {USER_PORTFOLIO}의 '종목명' 중 {NPS_2024}에는 없는 종목을 뽑아 only_in_my_portfolio.txt로 저장한다.
+4) {NPS_2024}에서 '자산군 내 비중 (%)' >= 1% 인 종목 상위 10개를 출력한다.
+5) {NPS_2023} vs {NPS_2024} Top10(번호 1~10) 순위 변화를 분석하고,
+   핵심 변화 이유 1줄과 함께 요약을 nps_top10_change_2023_to_2024.md로 저장한다.
 """
-            
-            reason = (await llm.ainvoke([HumanMessage(content=prompt)])).content.strip()
-            print(f"{reason}")
-            
-            print("\n=== [7] 마크다운 생성 ===")
-            md = ["# NPS 해외주식 Top10 변화 요약 (2023 → 2024)\n"]
-            md.append(f"## 핵심 변화\n{reason}\n")
-            md.append("\n## Top10 신규 진입")
-            if entered:
-                md.extend([f"- {x}" for x in entered])
-            else:
-                md.append("- 없음")
-            
-            md.append("\n\n## Top10 이탈")
-            if exited:
-                md.extend([f"- {x}" for x in exited])
-            else:
-                md.append("- 없음")
-            
-            md.append("\n\n## 순위 변동")
-            if moved:
-                for delta, name, a, b in moved:
-                    arrow = "↑" if delta > 0 else "↓"
-                    md.append(f"- {name}: {a}위 → {b}위 ({arrow}{abs(delta)})")
-            else:
-                md.append("- 없음")
-            
-            await call_mcp_tool(session, "create_markdown_file", {
-                "file_path": "nps_top10_change_2023_to_2024.md",
-                "content": "\n".join(md),
-                "overwrite": True
-            })
-            
-            # 마크다운 파일 읽기
-            md_result = await call_mcp_tool(session, "read_text_file", {
-                "file_path": "nps_top10_change_2023_to_2024.md"
-            })
-            print(f"저장된 마크다운: {len(md_result['content'])} bytes")
-            
-            print("\n" + "="*60)
-            print("✅ 모든 작업 완료!")
-            print("="*60)
-            print("생성된 파일:")
-            print("  1. only_in_my_portfolio.txt")
-            print("  2. nps_top10_change_2023_to_2024.md")
+            result = await executor.ainvoke({"input": scenario})
+            print("\n=== FINAL OUTPUT ===")
+            print(result["output"])
 
 if __name__ == "__main__":
-    asyncio.run(run_scenario())
+    asyncio.run(run_agent())
