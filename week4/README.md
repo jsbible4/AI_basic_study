@@ -1,3 +1,81 @@
+# Local Document–Based AI Workflow Automation Agent
+
+This project implements an AI agent that autonomously explores, analyzes, compares, and summarizes **local documents** to generate **meaningful investment insights and structured outputs**.
+
+The system combines:
+- an **MCP (Model Context Protocol) server** for secure local file access, and
+- a **LangChain-based agent** powered by **Claude LLM**, which decides **when and how to use file-system tools**.
+
+---
+
+
+---
+
+## Required Features
+
+### 1. MCP Server
+
+The MCP server provides controlled access to the local file system and implements the following features:
+
+- List files in a specified directory  
+- Read text files  
+- Create new Markdown files  
+- Summarize file contents and overwrite existing files  
+- Read CSV files and generate statistical summaries  
+
+All file I/O and CSV parsing logic resides **entirely in the MCP server**.
+
+---
+
+### 2. LangChain Agent
+
+The agent is implemented using LangChain and includes:
+
+- **Claude LLM** as the reasoning engine  
+- **MCP Client** connection for tool-based file access  
+- Clearly defined tool descriptions (docstrings act as tool documentation)  
+- An agent design where the LLM **decides when MCP tools should be used**, instead of relying on a fixed execution script  
+
+---
+
+## Agent Usage Scenario
+
+### Goal
+
+Enable the agent to autonomously explore, analyze, compare, and summarize local files in order to generate **investment insights and reusable artifacts**.
+
+---
+
+### Scenario Workflow
+
+1. The agent reads a personal investment portfolio:
+   - `International_stock_portfolio.csv`
+
+2. The agent reads National Pension Service (NPS) overseas equity portfolios:
+   - `NPS_International_stock_portfolio_2023.csv`
+   - `NPS_International_stock_portfolio_2024.csv`
+
+3. The agent lists all files in the target directory and reports the total number of files.
+
+4. From `International_stock_portfolio.csv`, the agent extracts stock names (`종목명`) that **do not appear** in the 2024 NPS portfolio and saves them to:
+
+5. From the 2024 NPS portfolio, the agent analyzes the column:
+and identifies the **top 10 investment holdings** with a weight of **1% or higher**.
+
+6. The agent compares the top 10 ranked stocks (rank 1–10) between 2023 and 2024:
+- New entries
+- Exited stocks
+- Rank movements
+
+7. The agent generates a Markdown report containing:
+- A one-line explanation of the key reason behind portfolio changes
+- A structured summary of ranking changes  
+
+
+# 전체 시스템 
+
+<img width="517" height="278" alt="image" src="https://github.com/user-attachments/assets/59d323dd-3f03-4935-bd9d-f77f58b2f7f5" />
+
 
 # 전체 구조 개요
 
@@ -16,7 +94,7 @@ filesystem_mcp.py
 ## 2.1 MCP Tool 호출 헬퍼
 역할: MCP 서버의 도구를 호출하고 결과를 파싱
 ```
-pythonasync def call_mcp_tool(session, name: str, args: Dict[str, Any]) -> Any:
+async def call_mcp_tool(session, name: str, args: Dict[str, Any]) -> Any:
     """MCP 도구 호출 헬퍼"""
     res = await session.call_tool(name, args)
     if hasattr(res, "content") and res.content:
@@ -40,7 +118,7 @@ MCP 서버의 응답을 JSON으로 파싱
 ## 2.2 LangChain Tool 래퍼 생성
 역할: MCP 도구를 LangChain Agent가 사용할 수 있는 형태로 변환
 ```
-pythondef build_tools(session: ClientSession):
+def build_tools(session: ClientSession):
     """MCP tool들을 LangChain Tool로 래핑"""
     
     @tool
@@ -75,7 +153,7 @@ docstring이 중요: LLM이 이 설명을 읽고 언제 도구를 사용할지 �
 ## 2.3 Agent Prompt 구성
 역할: Agent의 행동 규칙과 사고 방식 정의
 ```
-pythondef build_agent_prompt() -> ChatPromptTemplate:
+def build_agent_prompt() -> ChatPromptTemplate:
     """Agent의 판단 규칙 정의"""
     return ChatPromptTemplate.from_messages([
         ("system",
@@ -106,7 +184,7 @@ ReAct 패턴으로 단계별 사고
 ## 2.4 메인 실행 함수
 역할: MCP 연결 → Agent 구성 → 시나리오 실행
 ```
-pythonasync def run_agent():
+async def run_agent():
     # 1️⃣ MCP 서버 연결 설정
     py = os.path.join(os.getcwd(), ".venv", "bin", "python")
     script = os.path.join(os.getcwd(), "filesystem_mcp.py")
@@ -190,13 +268,13 @@ Final Answer: [최종 결과]
 
 ### System Prompt 규칙
 ```
-python   "1) 파일 목록/파일 내용/CSV 값은 반드시 제공된 tool(MCP)로 조회한다. 추측 금지."
+ "1) 파일 목록/파일 내용/CSV 값은 반드시 제공된 tool(MCP)로 조회한다. 추측 금지."
 ```
 → 파일 관련 작업은 무조건 Tool 사용
 
 ### Tool Docstring
 ```
-python   """dir_path 경로의 파일/폴더 목록을 조회한다."""
+ """dir_path 경로의 파일/폴더 목록을 조회한다."""
 ```
 → LLM이 이 설명을 보고 "아, 파일 목록이 필요하면 이 도구를 써야겠구나" 판단
 
@@ -212,7 +290,7 @@ python   """dir_path 경로의 파일/폴더 목록을 조회한다."""
 ## 2. 초기화 및 설정 부분
 ### 2.1 Logging 비활성화
 ```
-python# Logging (완전 비활성화 - MCP 프로토콜 보호)
+# Logging (완전 비활성화 - MCP 프로토콜 보호)
 logger = logging.getLogger("week4-mcp")
 logger.setLevel(logging.CRITICAL)  # 모든 로그 비활성화
 logger.addHandler(logging.NullHandler())
@@ -227,7 +305,7 @@ MCP는 stdin/stdout으로 JSON-RPC 프로토콜 통신
 
 ### 2.2 ROOT_DIR 설정
 ```
-pythonROOT_DIR = Path(os.environ.get("MCP_ROOT_DIR", "./sandbox")).resolve()
+ROOT_DIR = Path(os.environ.get("MCP_ROOT_DIR", "./sandbox")).resolve()
 ROOT_DIR.mkdir(parents=True, exist_ok=True)
 ```
 역할:
@@ -240,7 +318,7 @@ ROOT_DIR.mkdir(parents=True, exist_ok=True)
 
 ### 2.3 FastMCP 인스턴스 생성
 ```
-pythonmcp = FastMCP("week4-filesystem-agent")
+mcp = FastMCP("week4-filesystem-agent")
 ```
 역할:
 
@@ -251,7 +329,7 @@ MCP 서버 객체 생성
 ## 3. Helper 함수들
 ### 3.1 경로 보안 검증
 ```
-pythondef _safe_path(rel_path: str) -> Path:
+def _safe_path(rel_path: str) -> Path:
     """Prevent path traversal."""
     p = (ROOT_DIR / rel_path).resolve()
     if ROOT_DIR not in p.parents and p != ROOT_DIR:
@@ -261,7 +339,7 @@ pythondef _safe_path(rel_path: str) -> Path:
 목적: Path Traversal 공격 방지
 동작:
 ```
-python
+
 # 안전한 경로
 _safe_path("data.csv")           # ✅ ROOT_DIR/data.csv
 _safe_path("folder/file.txt")    # ✅ ROOT_DIR/folder/file.txt
@@ -279,7 +357,7 @@ ROOT_DIR not in p.parents: 최종 경로가 ROOT_DIR 밖이면 에러
 
 3.2 파일 읽기/쓰기
 ```
-pythondef _read_text(p: Path) -> str:
+def _read_text(p: Path) -> str:
     return p.read_text(encoding="utf-8")
 
 def _write_text(p: Path, content: str) -> None:
@@ -294,7 +372,7 @@ UTF-8 인코딩 고정
 
 ## 4. MCP Tools (5개)
 ### 4.1 list_files - 파일 목록 조회
-python
+
 ```
 @mcp.tool()
 def list_files(dir_path: str = ".", recursive: bool = False) -> List[Dict[str, Any]]:
@@ -304,7 +382,7 @@ def list_files(dir_path: str = ".", recursive: bool = False) -> List[Dict[str, A
 
 
 ### 4.2 read_text_file - 텍스트 파일 읽기
-python
+
 ```
 @mcp.tool()
 def read_text_file(file_path: str) -> Dict[str, Any]:
@@ -315,7 +393,7 @@ def read_text_file(file_path: str) -> Dict[str, Any]:
 
 
 ### 4.3 create_text_file - 텍스트 파일 생성
-python
+
 ```@mcp.tool()
 def create_text_file(file_path: str, content: str, overwrite: bool = False) -> Dict[str, Any]:
     """Create plain text file."""
@@ -329,7 +407,7 @@ overwrite=True: 기존 파일 덮어쓰기
 
 
 ### 4.4 create_markdown_file - 마크다운 파일 생성
-python
+
 ```@mcp.tool()
 def create_markdown_file(file_path: str, content: str, overwrite: bool = False) -> Dict[str, Any]:
     """Create markdown file."""
@@ -343,7 +421,7 @@ Agent가 "마크다운 생성" 작업 시 적절한 도구 선택 가능
 
 
 ### 4.5 read_csv_stats - CSV 읽기 + 통계
-python
+
 ```
 @mcp.tool()
 def read_csv_stats(file_path: str, max_rows_preview: int = 50) -> Dict[str, Any]:
@@ -353,7 +431,7 @@ def read_csv_stats(file_path: str, max_rows_preview: int = 50) -> Dict[str, Any]
 ```
 
 ## 5. 실행 부분
-python
+
 ```if __name__ == "__main__":
     mcp.run()
 ```
