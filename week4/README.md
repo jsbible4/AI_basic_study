@@ -1,5 +1,7 @@
 # Local Document–Based AI Workflow Automation Agent
 
+https://blog.naver.com/unpatched_winner/224133946973
+
 This project implements an AI agent that autonomously explores, analyzes, compares, and summarizes **local documents** to generate **meaningful investment insights and structured outputs**.
 
 The system combines:
